@@ -59,7 +59,6 @@ jobs:
           DJANGO_SETTINGS_MODULE: gpt_resume.settings
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          # attempt migrations and run tests; allow failures to be visible
           python manage.py migrate --noinput || echo "Migration step returned non-zero"
           python manage.py test || echo "Django tests returned non-zero or none found"
 
@@ -81,13 +80,44 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Debug IMAGE_TAG
+      - name: Find Dockerfile & context
+        id: find_dockerfile
         run: |
-          echo "IMAGE_TAG='${{ needs.prepare.outputs.IMAGE_TAG }}'"
-          if [ -z "${{ needs.prepare.outputs.IMAGE_TAG }}" ]; then
-            echo "ERROR: IMAGE_TAG is empty. Aborting."
+          # default values
+          echo "FOUND_DOCKERFILE=false" >> $GITHUB_OUTPUT
+
+          if [ -f ./Dockerfile ]; then
+            echo "DOCKERFILE=./Dockerfile" >> $GITHUB_ENV
+            echo "CONTEXT=." >> $GITHUB_ENV
+            echo "FOUND_DOCKERFILE=true" >> $GITHUB_OUTPUT
+            echo "Using ./Dockerfile with context ."
+          elif [ -f ./gpt_resume/Dockerfile ]; then
+            echo "DOCKERFILE=./gpt_resume/Dockerfile" >> $GITHUB_ENV
+            echo "CONTEXT=./gpt_resume" >> $GITHUB_ENV
+            echo "FOUND_DOCKERFILE=true" >> $GITHUB_OUTPUT
+            echo "Using gpt_resume/Dockerfile with context gpt_resume"
+          elif [ -f ./gpt_resume_frontend/Dockerfile ]; then
+            echo "DOCKERFILE=./gpt_resume_frontend/Dockerfile" >> $GITHUB_ENV
+            echo "CONTEXT=./gpt_resume_frontend" >> $GITHUB_ENV
+            echo "FOUND_DOCKERFILE=true" >> $GITHUB_OUTPUT
+            echo "Using gpt_resume_frontend/Dockerfile with context gpt_resume_frontend"
+          elif [ -f ./docker/Dockerfile ]; then
+            echo "DOCKERFILE=./docker/Dockerfile" >> $GITHUB_ENV
+            echo "CONTEXT=./docker" >> $GITHUB_ENV
+            echo "FOUND_DOCKERFILE=true" >> $GITHUB_OUTPUT
+            echo "Using docker/Dockerfile with context docker"
+          else
+            echo "No Dockerfile found in common locations."
+            echo "Searched: ./Dockerfile, ./gpt_resume/Dockerfile, ./gpt_resume_frontend/Dockerfile, ./docker/Dockerfile"
+            # make the job fail with a helpful message
             exit 1
           fi
+
+      - name: Debug: show chosen Dockerfile and context
+        run: |
+          echo "DOCKERFILE=${DOCKERFILE:-<not set>}"
+          echo "CONTEXT=${CONTEXT:-<not set>}"
+          echo "IMAGE_TAG='${{ needs.prepare.outputs.IMAGE_TAG }}'"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
@@ -101,8 +131,8 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
-          context: .
-          file: ./Dockerfile
+          context: ${{ env.CONTEXT }}
+          file: ${{ env.DOCKERFILE }}
           push: true
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/gpt-resume:${{ needs.prepare.outputs.IMAGE_TAG }}
@@ -131,11 +161,9 @@ jobs:
             exit 1
           fi
 
-          # replace existing tag line if present (simple sed)
           if grep -q "tag:" "$VF"; then
             sed -i "s|tag:.*|tag: \"${TAG}\"|" "$VF"
           else
-            # append minimal image block without heredoc to avoid alignment issues
             printf "\nimage:\n  repository: %s\n  tag: \"%s\"\n" "${{ secrets.DOCKERHUB_USERNAME }}/gpt-resume" "${TAG}" >> "$VF"
           fi
 
