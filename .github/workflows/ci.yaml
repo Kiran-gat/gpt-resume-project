@@ -42,18 +42,24 @@ jobs:
         with:
           go-version: 1.22
 
+      - name: Prepare Go modules
+        working-directory: gpt_resume
+        run: go mod tidy
+
       - name: Cache Go modules
         uses: actions/cache@v4
         with:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          key: ${{ runner.os }}-go-${{ hashFiles('gpt_resume/go.sum') }}
 
       - name: Build
-        run: go build -v -o go-web-app
+        working-directory: gpt_resume
+        run: go build -v -o ../go-web-app
 
       - name: Unit tests
+        working-directory: gpt_resume
         run: go test ./... -v
 
   code-quality:
@@ -63,7 +69,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: golangci-lint
+      - name: Run Go lint
         uses: golangci/golangci-lint-action@v6
         with:
           version: v1.56.2
@@ -118,7 +124,7 @@ jobs:
           echo "VALUES_FILE=${{ env.VALUES_FILE }}"
           echo "IMAGE_TAG=${{ needs.prepare.outputs.IMAGE_TAG }}"
 
-      - name: Show current values.yaml (first 120 lines)
+      - name: Show current values.yaml
         run: sed -n '1,120p' "${{ env.VALUES_FILE }}" || true
 
       - name: Update values.yaml image.tag safely
@@ -167,7 +173,7 @@ jobs:
             echo "changed=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Show updated values.yaml (first 120 lines)
+      - name: Show updated values.yaml
         run: sed -n '1,120p' "${{ env.VALUES_FILE }}" || true
 
       - name: Commit & push (only if changed)
