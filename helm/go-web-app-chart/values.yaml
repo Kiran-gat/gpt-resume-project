@@ -41,3 +41,7 @@ resources:
   limits:
     cpu: "500m"
     memory: "512Mi"
+
+image:
+  repository: 63631052/gpt-resume
+  tag: "dcc3b3c87a15"
