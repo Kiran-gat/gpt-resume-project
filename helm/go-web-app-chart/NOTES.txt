@@ -1,0 +1,19 @@
+Deploy notes:
+
+1) Create secrets (example):
+   kubectl create namespace resume || true
+   kubectl create secret generic django-secrets -n resume \
+     --from-literal=DJANGO_SECRET_KEY='your_django_secret' \
+     --from-literal=OPENAI_API_KEY='sk-xxx'
+
+2) Install:
+   helm lint ./helm/go-web-app-chart
+   helm upgrade --install resume ./helm/go-web-app-chart --namespace resume --create-namespace
+
+3) Check:
+   kubectl get all -n resume
+   kubectl get pvc -n resume
+   kubectl get ingress -n resume
+
+4) To upgrade images later:
+   helm upgrade resume ./helm/go-web-app-chart --namespace resume --set backend.image.tag=newtag --set frontend.image.tag=newtag

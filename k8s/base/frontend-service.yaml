@@ -1,0 +1,15 @@
+# Service for the Next.js frontend
+apiVersion: v1
+kind: Service
+metadata:
+  name: resume-frontend
+  labels:
+    app: resume-frontend
+spec:
+  selector:
+    app: resume-frontend
+  ports:
+    - port: 80               # external (browser)
+      targetPort: 3000       # inside container
+      protocol: TCP
+  type: LoadBalancer         # exposes on AWS ELB in EKS
