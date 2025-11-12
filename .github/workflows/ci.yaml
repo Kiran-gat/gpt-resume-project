@@ -44,7 +44,7 @@ jobs:
         with:
           fetch-depth: 1
 
-      # ---- Django Backend ----
+      # Django backend
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -62,10 +62,11 @@ jobs:
           DJANGO_SETTINGS_MODULE: gpt_resume.settings
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          python manage.py migrate --noinput || echo "Migration skipped"
-          python manage.py test || echo "No Django tests found"
+          # create/prepare DB and run migrations; non-fatal if there are no migrations
+          python manage.py migrate --noinput || echo "Migration step returned non-zero (continuing)"
+          python manage.py test || echo "Django tests returned non-zero or none found (continuing)"
 
-      # ---- Next.js Frontend ----
+      # Next.js frontend
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -78,7 +79,7 @@ jobs:
           npm run build
 
   push-image:
-    name: Build & Push Docker Image
+    name: Build and Push Docker Image
     needs: [prepare, build-and-test]
     runs-on: ubuntu-latest
     steps:
@@ -89,7 +90,7 @@ jobs:
         run: |
           echo "IMAGE_TAG from prepare: '${{ needs.prepare.outputs.IMAGE_TAG }}'"
           if [ -z "${{ needs.prepare.outputs.IMAGE_TAG }}" ]; then
-            echo "❌ ERROR: IMAGE_TAG is empty. Aborting build."
+            echo "ERROR: IMAGE_TAG is empty. Aborting."
             exit 1
           fi
 
@@ -132,11 +133,11 @@ jobs:
           echo "Updating image tag to ${TAG} in ${VF}"
 
           if [ ! -f "$VF" ]; then
-            echo "❌ ERROR: Helm values file not found at $VF"
+            echo "ERROR: Helm values file not found at $VF"
             exit 1
           fi
 
-          # safely replace or append image tag
+          # If tag exists, replace it; otherwise append an image block
           if grep -q "tag:" "$VF"; then
             sed -i "s|tag:.*|tag: \"${TAG}\"|" "$VF"
           else
