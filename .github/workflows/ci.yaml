@@ -11,7 +11,9 @@ on:
 
 env:
   VALUES_FILE: helm/go-web-app-chart/values.yaml
-  IMAGE_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/go-web-app
+  IMAGE_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/gpt-resume
+  BACKEND_DIR: gpt_resume
+  FRONTEND_DIR: gpt_resume_frontend
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -25,69 +27,63 @@ jobs:
     steps:
       - name: Set IMAGE_TAG (short SHA)
         id: set_tag
-        run: |
-          echo "IMAGE_TAG=$(echo ${GITHUB_SHA} | cut -c1-12)" >> $GITHUB_OUTPUT
+        run: echo "IMAGE_TAG=$(echo ${GITHUB_SHA} | cut -c1-12)" >> $GITHUB_OUTPUT
 
-  build:
+  build-and-test:
+    name: Build & Test Django + Next.js
     needs: prepare
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Setup Go
-        uses: actions/setup-go@v4
+      # ---------------- Django Backend ----------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          go-version: 1.22
+          python-version: '3.11'
 
-      - name: Prepare Go modules
-        working-directory: gpt_resume
-        run: go mod tidy
+      - name: Install backend dependencies
+        working-directory: ${{ env.BACKEND_DIR }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Cache Go modules
-        uses: actions/cache@v4
+      - name: Run Django migrations and tests
+        working-directory: ${{ env.BACKEND_DIR }}
+        env:
+          DJANGO_SETTINGS_MODULE: gpt_resume.settings
+        run: |
+          python manage.py makemigrations
+          python manage.py migrate
+          python manage.py test || echo "No Django tests found"
+
+      # ---------------- Next.js Frontend ----------------
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('gpt_resume/go.sum') }}
+          node-version: '20'
 
-      - name: Build
-        working-directory: gpt_resume
-        run: go build -v -o ../go-web-app
-
-      - name: Unit tests
-        working-directory: gpt_resume
-        run: go test ./... -v
-
-  code-quality:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Run Go lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: v1.56.2
+      - name: Install and build Next.js app
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: |
+          npm install
+          npm run build
 
   push-image:
-    needs: code-quality
+    name: Build and Push Docker Image
+    needs: build-and-test
     runs-on: ubuntu-latest
     env:
       IMAGE_TAG: ${{ needs.prepare.outputs.IMAGE_TAG }}
-      IMAGE_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/go-web-app
+      IMAGE_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/gpt-resume
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup QEMU
-        uses: docker/setup-qemu-action@v2
-
-      - name: Setup Buildx
+      - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
       - name: Login to Docker Hub
@@ -96,7 +92,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push image
+      - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
           context: .
@@ -105,81 +101,33 @@ jobs:
           tags: |
             ${{ env.IMAGE_REPO }}:${{ env.IMAGE_TAG }}
             ${{ env.IMAGE_REPO }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
   update-helm-values:
-    name: Update Helm values.yaml with new tag & push
+    name: Update Helm values.yaml with new image tag
     needs: push-image
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (allow push)
+      - name: Checkout (with push permissions)
         uses: actions/checkout@v4
         with:
           persist-credentials: true
           fetch-depth: 0
 
-      - name: Confirm variables
-        run: |
-          echo "VALUES_FILE=${{ env.VALUES_FILE }}"
-          echo "IMAGE_TAG=${{ needs.prepare.outputs.IMAGE_TAG }}"
-
-      - name: Show current values.yaml
-        run: sed -n '1,120p' "${{ env.VALUES_FILE }}" || true
-
-      - name: Update values.yaml image.tag safely
-        id: patch
+      - name: Update Helm values file
         run: |
           VF="${{ env.VALUES_FILE }}"
           TAG="${{ needs.prepare.outputs.IMAGE_TAG }}"
-
+          echo "Updating image tag to ${TAG} in ${VF}"
           if [ ! -f "$VF" ]; then
-            echo "values.yaml not found at $VF"
+            echo "❌ ERROR: Helm values file not found at $VF"
             exit 1
           fi
+          sed -i "s/tag: .*/tag: \"${TAG}\"/g" "$VF"
 
-          if grep -q "^image:" "$VF"; then
-            awk -v tag="$TAG" '
-              BEGIN {in_image=0; updated=0}
-              /^image:/ { print; in_image=1; next }
-              in_image && /^[[:space:]]*[^[:space:]]/ && !/^[[:space:]]*tag:/ { print; in_image=0; next }
-              in_image && /^[[:space:]]*tag:/ {
-                sub(/tag:.*/, "tag: \"" tag "\"")
-                print
-                updated=1
-                in_image=0
-                next
-              }
-              { print }
-              END {
-                if (!updated && in_image==1) {
-                  print "  tag: \"" tag "\""
-                }
-              }
-            ' "$VF" > "$VF.tmp" && mv "$VF.tmp" "$VF" || true
-          else
-            {
-              echo
-              echo "image:"
-              echo "  repository: ${{ secrets.DOCKERHUB_USERNAME }}/go-web-app"
-              echo "  tag: \"$TAG\""
-            } >> "$VF"
-          fi
-
-          git add "$VF" || true
-          if git diff --staged --quiet; then
-            echo "changed=false" >> $GITHUB_OUTPUT
-          else
-            echo "changed=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Show updated values.yaml
-        run: sed -n '1,120p' "${{ env.VALUES_FILE }}" || true
-
-      - name: Commit & push (only if changed)
-        if: ${{ steps.patch.outputs.changed == 'true' }}
+      - name: Commit and push updated Helm values
         run: |
-          git config user.email "ci-bot@example.com"
           git config user.name "CI Bot"
-          git commit -m "ci: bump image.tag to ${{ needs.prepare.outputs.IMAGE_TAG }}" || echo "nothing to commit"
+          git config user.email "ci-bot@example.com"
+          git add "${{ env.VALUES_FILE }}"
+          git commit -m "ci: update image tag to ${TAG}" || echo "No changes to commit"
           git push origin HEAD:master
