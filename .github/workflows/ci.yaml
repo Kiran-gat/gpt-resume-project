@@ -39,8 +39,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -59,8 +57,8 @@ jobs:
           DJANGO_SETTINGS_MODULE: gpt_resume.settings
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          python manage.py migrate --noinput || echo "Migration step returned non-zero"
-          python manage.py test || echo "Django tests returned non-zero or none found"
+          python manage.py migrate --noinput || echo "No migrations"
+          python manage.py test || echo "No tests found"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -80,44 +78,28 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Find Dockerfile & context
-        id: find_dockerfile
+      - name: Detect Dockerfile path
+        id: detect
         run: |
-          # default values
-          echo "FOUND_DOCKERFILE=false" >> $GITHUB_OUTPUT
-
           if [ -f ./Dockerfile ]; then
             echo "DOCKERFILE=./Dockerfile" >> $GITHUB_ENV
             echo "CONTEXT=." >> $GITHUB_ENV
-            echo "FOUND_DOCKERFILE=true" >> $GITHUB_OUTPUT
-            echo "Using ./Dockerfile with context ."
           elif [ -f ./gpt_resume/Dockerfile ]; then
             echo "DOCKERFILE=./gpt_resume/Dockerfile" >> $GITHUB_ENV
             echo "CONTEXT=./gpt_resume" >> $GITHUB_ENV
-            echo "FOUND_DOCKERFILE=true" >> $GITHUB_OUTPUT
-            echo "Using gpt_resume/Dockerfile with context gpt_resume"
           elif [ -f ./gpt_resume_frontend/Dockerfile ]; then
             echo "DOCKERFILE=./gpt_resume_frontend/Dockerfile" >> $GITHUB_ENV
             echo "CONTEXT=./gpt_resume_frontend" >> $GITHUB_ENV
-            echo "FOUND_DOCKERFILE=true" >> $GITHUB_OUTPUT
-            echo "Using gpt_resume_frontend/Dockerfile with context gpt_resume_frontend"
-          elif [ -f ./docker/Dockerfile ]; then
-            echo "DOCKERFILE=./docker/Dockerfile" >> $GITHUB_ENV
-            echo "CONTEXT=./docker" >> $GITHUB_ENV
-            echo "FOUND_DOCKERFILE=true" >> $GITHUB_OUTPUT
-            echo "Using docker/Dockerfile with context docker"
           else
-            echo "No Dockerfile found in common locations."
-            echo "Searched: ./Dockerfile, ./gpt_resume/Dockerfile, ./gpt_resume_frontend/Dockerfile, ./docker/Dockerfile"
-            # make the job fail with a helpful message
+            echo "ERROR: No Dockerfile found." >&2
             exit 1
           fi
 
-      - name: Debug: show chosen Dockerfile and context
+      - name: Show Dockerfile and context
         run: |
-          echo "DOCKERFILE=${DOCKERFILE:-<not set>}"
-          echo "CONTEXT=${CONTEXT:-<not set>}"
-          echo "IMAGE_TAG='${{ needs.prepare.outputs.IMAGE_TAG }}'"
+          echo "Using Dockerfile: $DOCKERFILE"
+          echo "Build context: $CONTEXT"
+          echo "Tag: ${{ needs.prepare.outputs.IMAGE_TAG }}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
@@ -150,21 +132,24 @@ jobs:
           persist-credentials: true
           fetch-depth: 0
 
-      - name: Update Helm values file
+      - name: Update Helm values.yaml
         run: |
           VF="${{ env.VALUES_FILE }}"
           TAG="${{ needs.prepare.outputs.IMAGE_TAG }}"
           echo "Updating image tag to ${TAG} in ${VF}"
 
           if [ ! -f "$VF" ]; then
-            echo "ERROR: values file not found at $VF"
+            echo "Helm values.yaml not found!"
             exit 1
           fi
 
           if grep -q "tag:" "$VF"; then
             sed -i "s|tag:.*|tag: \"${TAG}\"|" "$VF"
           else
-            printf "\nimage:\n  repository: %s\n  tag: \"%s\"\n" "${{ secrets.DOCKERHUB_USERNAME }}/gpt-resume" "${TAG}" >> "$VF"
+            echo "" >> "$VF"
+            echo "image:" >> "$VF"
+            echo "  repository: ${{ secrets.DOCKERHUB_USERNAME }}/gpt-resume" >> "$VF"
+            echo "  tag: \"${TAG}\"" >> "$VF"
           fi
 
       - name: Commit & push updated Helm values
