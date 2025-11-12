@@ -1,5 +1,9 @@
 name: CI/CD
 
+# Ensure GITHUB_TOKEN has permission to push changes
+permissions:
+  contents: write
+
 on:
   push:
     branches:
@@ -57,8 +61,8 @@ jobs:
           DJANGO_SETTINGS_MODULE: gpt_resume.settings
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          python manage.py migrate --noinput || echo "No migrations"
-          python manage.py test || echo "No tests found"
+          python manage.py migrate --noinput || echo "No migrations or non-fatal"
+          python manage.py test || echo "No tests or tests failed (non-fatal)"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -91,15 +95,15 @@ jobs:
             echo "DOCKERFILE=./gpt_resume_frontend/Dockerfile" >> $GITHUB_ENV
             echo "CONTEXT=./gpt_resume_frontend" >> $GITHUB_ENV
           else
-            echo "ERROR: No Dockerfile found." >&2
+            echo "ERROR: No Dockerfile found in common places" >&2
             exit 1
           fi
 
       - name: Show Dockerfile and context
         run: |
-          echo "Using Dockerfile: $DOCKERFILE"
-          echo "Build context: $CONTEXT"
-          echo "Tag: ${{ needs.prepare.outputs.IMAGE_TAG }}"
+          echo "DOCKERFILE=$DOCKERFILE"
+          echo "CONTEXT=$CONTEXT"
+          echo "IMAGE_TAG=${{ needs.prepare.outputs.IMAGE_TAG }}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
@@ -126,36 +130,68 @@ jobs:
     needs: push-image
     runs-on: ubuntu-latest
     steps:
+      # checkout with persist-credentials so git push uses the GITHUB_TOKEN
       - name: Checkout (allow push)
         uses: actions/checkout@v4
         with:
           persist-credentials: true
           fetch-depth: 0
 
-      - name: Update Helm values.yaml
+      - name: Ensure tag is present
         run: |
-          VF="${{ env.VALUES_FILE }}"
           TAG="${{ needs.prepare.outputs.IMAGE_TAG }}"
-          echo "Updating image tag to ${TAG} in ${VF}"
-
-          if [ ! -f "$VF" ]; then
-            echo "Helm values.yaml not found!"
+          echo "TAG='${TAG}'"
+          if [ -z "${TAG}" ]; then
+            echo "ERROR: IMAGE_TAG is empty - aborting helm update"
             exit 1
           fi
 
-          if grep -q "tag:" "$VF"; then
-            sed -i "s|tag:.*|tag: \"${TAG}\"|" "$VF"
-          else
-            echo "" >> "$VF"
-            echo "image:" >> "$VF"
-            echo "  repository: ${{ secrets.DOCKERHUB_USERNAME }}/gpt-resume" >> "$VF"
-            echo "  tag: \"${TAG}\"" >> "$VF"
+      - name: Update Helm values file
+        id: update_values
+        run: |
+          VF="${{ env.VALUES_FILE }}"
+          TAG="${{ needs.prepare.outputs.IMAGE_TAG }}"
+          if [ ! -f "$VF" ]; then
+            echo "values.yaml not found at $VF"
+            exit 1
           fi
 
-      - name: Commit & push updated Helm values
+          # update tag if exists
+          if grep -q "^image:" "$VF"; then
+            # replace tag line under image: block, fallback to append if not found
+            awk -v tag="$TAG" '
+              BEGIN {in_image=0; updated=0}
+              /^image:/ { print; in_image=1; next }
+              in_image && /^[[:space:]]*tag:/ {
+                sub(/tag:.*/, "tag: \"" tag "\"")
+                print; updated=1; in_image=0; next
+              }
+              in_image && /^[[:space:]]*[^[:space:]]/ { print; in_image=0; next }
+              { print }
+              END { if (!updated && in_image==1) print "  tag: \"" tag "\"" }
+            ' "$VF" > "$VF.tmp" && mv "$VF.tmp" "$VF" || true
+          else
+            # append minimal image block
+            printf "\nimage:\n  repository: %s\n  tag: \"%s\"\n" "${{ secrets.DOCKERHUB_USERNAME }}/gpt-resume" "${TAG}" >> "$VF"
+          fi
+
+          # detect whether file changed
+          git add "$VF" || true
+          if git diff --staged --quiet; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit & push updated Helm values (only if changed)
+        if: ${{ steps.update_values.outputs.changed == 'true' }}
         run: |
           git config user.name "CI Bot"
           git config user.email "ci-bot@example.com"
-          git add "${{ env.VALUES_FILE }}"
-          git commit -m "ci: update image tag to ${TAG}" || echo "No changes to commit"
+          git commit -m "ci: update image tag to ${{ needs.prepare.outputs.IMAGE_TAG }}" || echo "nothing to commit"
           git push origin HEAD:master
+
+      - name: Report (no-op) if nothing changed
+        if: ${{ steps.update_values.outputs.changed == 'false' }}
+        run: echo "No changes to values.yaml; nothing to push."
+
