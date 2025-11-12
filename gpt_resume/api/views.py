@@ -26,6 +26,7 @@ class JobCreateAPI(generics.CreateAPIView):
 
 
 class ApplicantListAPI(generics.ListAPIView):
+
     permission_classes = (AllowAny,)
     serializer_class = ApplicantSerializer
 
@@ -33,35 +34,22 @@ class ApplicantListAPI(generics.ListAPIView):
         job_u_id = self.kwargs.get('job_u_id', None)
         if not job_u_id:
             raise Exception("Job id not found")
-
         jobs = Job.objects.filter(u_id=job_u_id)
         if not jobs.exists():
             raise Exception("Job not found")
-
-        job = jobs.first()
-
-        # filter based on type param
-        type_param = self.request.query_params.get("type", "")
-        if type_param == "norec":
-            return Applicant.objects.filter(job_applied=job, relevance__lt=70).order_by('-relevance')
-        elif type_param == "rec":
-            return Applicant.objects.filter(job_applied=job, relevance__gte=70).order_by('-relevance')
-
-        # default: return all applicants
-        return Applicant.objects.filter(job_applied=job).order_by('-relevance')
-   
+        # Non-relevant applicants [Having relevance score less than 70]
+        if "norec" in self.request.query_params:
+            return Applicant.objects.filter(job_applied=jobs.first(), relevance__lt=70).order_by('-relevance')
+        # Relevant applicants [Having relevance score greater than (or equal to) 70]
+        elif "rec" in self.request.query_params:
+            return Applicant.objects.filter(job_applied=jobs.first(), relevance__gte=70).order_by('-relevance')
+        return Applicant.objects.filter(job_applied=jobs.first()).order_by('-relevance')
 
     def list(self, request, *args, **kwargs):
         try:
-            queryset = self.get_queryset()
-            serializer = self.get_serializer(queryset, many=True, context={'request': request})
-            return Response(serializer.data, status=status.HTTP_200_OK)
+            return super().list(request, *args, **kwargs)
         except Exception as e:
             return Response({"message": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-
-
-
 
 
 class ApplicantSummaryAPI(generics.RetrieveAPIView):
