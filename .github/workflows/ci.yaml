@@ -1,3 +1,107 @@
+name: CI/CD
+
+on:
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - 'helm/**'
+      - 'k8s/**'
+      - 'README.md'
+
+env:
+  VALUES_FILE: helm/go-web-app-chart/values.yaml
+  IMAGE_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/go-web-app
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      IMAGE_TAG: ${{ steps.set_tag.outputs.IMAGE_TAG }}
+    steps:
+      - name: Set IMAGE_TAG (short SHA)
+        id: set_tag
+        run: |
+          echo "IMAGE_TAG=$(echo ${GITHUB_SHA} | cut -c1-12)" >> $GITHUB_OUTPUT
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.22
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+
+      - name: Build
+        run: go build -v -o go-web-app
+
+      - name: Unit tests
+        run: go test ./... -v
+
+  code-quality:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.56.2
+
+  push-image:
+    needs: code-quality
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_TAG: ${{ needs.prepare.outputs.IMAGE_TAG }}
+      IMAGE_REPO: ${{ env.IMAGE_REPO }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_REPO }}:${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_REPO }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   update-helm-values:
     name: Update Helm values.yaml with new tag & push
     needs: push-image
@@ -20,18 +124,15 @@
       - name: Update values.yaml image.tag safely
         id: patch
         run: |
-          set -euo pipefail
           VF="${{ env.VALUES_FILE }}"
           TAG="${{ needs.prepare.outputs.IMAGE_TAG }}"
-          REPO="${{ secrets.DOCKERHUB_USERNAME }}/go-web-app"
 
           if [ ! -f "$VF" ]; then
             echo "values.yaml not found at $VF"
             exit 1
           fi
 
-          # If image block exists, update tag; otherwise append a minimal image block.
-          if grep -qE '^image:' "$VF"; then
+          if grep -q "^image:" "$VF"; then
             awk -v tag="$TAG" '
               BEGIN {in_image=0; updated=0}
               /^image:/ { print; in_image=1; next }
@@ -49,18 +150,16 @@
                   print "  tag: \"" tag "\""
                 }
               }
-            ' "$VF" > "$VF.tmp" && mv "$VF.tmp" "$VF"
+            ' "$VF" > "$VF.tmp" && mv "$VF.tmp" "$VF" || true
           else
-            # Append a minimal image block without heredoc
             {
               echo
               echo "image:"
-              echo "  repository: ${REPO}"
-              echo "  tag: \"${TAG}\""
+              echo "  repository: ${{ secrets.DOCKERHUB_USERNAME }}/go-web-app"
+              echo "  tag: \"$TAG\""
             } >> "$VF"
           fi
 
-          # Stage file and detect staged changes
           git add "$VF" || true
           if git diff --staged --quiet; then
             echo "changed=false" >> $GITHUB_OUTPUT
