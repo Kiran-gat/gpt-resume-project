@@ -73,7 +73,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       IMAGE_TAG: ${{ needs.prepare.outputs.IMAGE_TAG }}
-      IMAGE_REPO: ${{ env.IMAGE_REPO }}
+      IMAGE_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/go-web-app
     steps:
       - name: Checkout
         uses: actions/checkout@v4
