@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resume-backend
+  labels:
+    app: resume-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: resume-backend
+  template:
+    metadata:
+      labels:
+        app: resume-backend
+    spec:
+      containers:
+        - name: resume-backend
+          image: 63631052/resume-backend:latest   # replace if needed
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DEBUG
+              value: "True"           # keep True for simple demo
+            - name: DJANGO_SETTINGS_MODULE
+              value: "gpt_resume.settings"

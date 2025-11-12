@@ -1,0 +1,11 @@
+
+__pycache__
+*.pyc
+.env
+venv
+gpt-venv
+node_modules
+.git
+db.sqlite3
+Dockerfile
+.dockerignore

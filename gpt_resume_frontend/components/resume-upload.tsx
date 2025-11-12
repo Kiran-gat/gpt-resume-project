@@ -4,19 +4,18 @@ import { Button } from "@/components/ui/button";
 import PDFUpload from "@/components/pdf-upload";
 import { useDropzone } from "react-dropzone";
 import AddJob from "./job-dialog";
-import axios from 'axios';
-// import { useRouter } from "next/navigation";
+import axios from "axios";
 
-const ResumeUpload = () => {
+const ResumeUpload: React.FC = () => {
   const [files, setFiles] = useState<File[]>([]);
   const { acceptedFiles, getRootProps, getInputProps } = useDropzone({
     accept: {
       "application/pdf": [".pdf"],
     },
     multiple: true,
-    onDrop: (acceptedFiles: File[]) => {
-      setFiles(acceptedFiles);
-    }
+    onDrop: (accepted: File[]) => {
+      setFiles(accepted);
+    },
   });
 
   const handleDialogSubmit = (jobTitle: string | Blob, jobDescription: string | Blob) => {
@@ -25,34 +24,34 @@ const ResumeUpload = () => {
     formData.append("job_title", jobTitle.toString());
     formData.append("job_description", jobDescription.toString());
 
-    //formData.append("job_title", jobTitle);
-    //formData.append("job_description", jobDescription);
-    files.forEach((file) => {
+    // Use the files state (set by onDrop)
+    (files.length ? files : acceptedFiles).forEach((file) => {
       formData.append("files", file);
     });
 
-    axios.post('http://127.0.0.1:8000/api/post-resume-with-job/', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-        // "Access-Control-Allow-Origin": "*",
-        // "Access-Control-Allow-Methods": "POST, PUT, OPTIONS",
-        // "Access-Control-Allow-Headers": "Content-Type",
-        // "Access-Control-Max-Age": "300"
-      }
-    }).then(response => {
-      console.log(response);
-      window.location.href = `/result/${response.data.job_u_id}`;
-    }).catch(error => {
-      console.error(error);
-      // window.location.href = '/result';
-    });
+    axios
+      .post("http://127.0.0.1:8000/api/post-resume-with-job/", formData, {
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
+      })
+      .then((response) => {
+        console.log(response);
+        window.location.href = `/result/${response.data.job_u_id}`;
+      })
+      .catch((error) => {
+        console.error(error);
+      });
   };
+
+  const listToRender = files.length ? files : acceptedFiles;
 
   return (
     <>
       <div {...getRootProps({ className: "dropzone" })}>
+        <input {...getInputProps()} aria-label="Upload PDFs" />
         <div className="mx-auto border-[#5F5ADB] m-5 w-[40%] p-5 rounded-lg border-[2px] flex flex-col items-center justify-around gap-3">
-          {<svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
             <g opacity="0.7">
               <path d="M26.6666 26.6667L19.9999 20L13.3333 26.6667" stroke="#121212" strokeWidth="3.33333" strokeLinecap="round" strokeLinejoin="round" />
               <path d="M20 20V35" stroke="#121212" strokeWidth="3.33333" strokeLinecap="round" strokeLinejoin="round" />
@@ -60,12 +59,10 @@ const ResumeUpload = () => {
               <path d="M26.6666 26.6667L19.9999 20L13.3333 26.6667" stroke="#121212" strokeWidth="3.33333" strokeLinecap="round" strokeLinejoin="round" />
             </g>
           </svg>
-          }
+
           <div className="flex w-3/5 justify-around">
             <div className="font-semibold text-sm">
-              <span className="font-semibold text-[#5F5ADB]">
-                Click to upload PDF
-              </span>{" "}
+              <span className="font-semibold text-[#5F5ADB]">Click to upload PDF</span>{" "}
               <span className="font-light">or drag and drop</span>
             </div>
           </div>
@@ -73,14 +70,18 @@ const ResumeUpload = () => {
       </div>
 
       <div className="mx-auto m-5 w-[40%]">
-        {acceptedFiles ? (
-          acceptedFiles.map((file) => (
-            <PDFUpload
-              isUploaded={true}
-              fileName={file.name}
-              fileSize={(file.size / 1000)}
-            />
-          ))
+        {listToRender && listToRender.length > 0 ? (
+          listToRender.map((file) => {
+            const key = file.name ? `${file.name}-${file.lastModified ?? file.size}` : `${file.size}-${Math.random()}`;
+            return (
+              <PDFUpload
+                key={key}
+                isUploaded={true}
+                fileName={file.name}
+                fileSize={(file.size / 1000)}
+              />
+            );
+          })
         ) : (
           <></>
         )}
@@ -88,8 +89,7 @@ const ResumeUpload = () => {
 
       <div className="mx-auto m-5 w-1/5 flex items-center justify-around">
         <Button variant="outline" className="w-36">Cancel</Button>
-        {/* <Button className="w-36 bg-[#423DDB] hover:bg-[#5F5ADB]">Attach Files</Button> */}
-        <AddJob onSubmit={handleDialogSubmit}></AddJob>
+        <AddJob onSubmit={handleDialogSubmit} />
       </div>
     </>
   );
