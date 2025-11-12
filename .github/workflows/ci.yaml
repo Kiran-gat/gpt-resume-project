@@ -1,6 +1,5 @@
 name: CI/CD
 
-# Ensure GITHUB_TOKEN has permission to push changes
 permissions:
   contents: write
 
@@ -23,20 +22,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  prepare:
-    runs-on: ubuntu-latest
-    outputs:
-      IMAGE_TAG: ${{ steps.set_tag.outputs.IMAGE_TAG }}
-    steps:
-      - name: Set IMAGE_TAG (short SHA)
-        id: set_tag
-        run: |
-          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-12)
-          echo "IMAGE_TAG=${SHORT_SHA}" >> $GITHUB_OUTPUT
-          echo "Generated IMAGE_TAG=${SHORT_SHA}"
-
   build-and-test:
-    needs: prepare
+    name: Build & Test Django + Next.js
     runs-on: ubuntu-latest
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -61,7 +48,7 @@ jobs:
           DJANGO_SETTINGS_MODULE: gpt_resume.settings
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          python manage.py migrate --noinput || echo "No migrations or non-fatal"
+          python manage.py migrate --noinput || echo "No migrations / non-fatal"
           python manage.py test || echo "No tests or tests failed (non-fatal)"
 
       - name: Set up Node.js
@@ -76,7 +63,8 @@ jobs:
           npm run build
 
   push-image:
-    needs: [prepare, build-and-test]
+    name: Build & Push Docker Image
+    needs: build-and-test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -94,16 +82,19 @@ jobs:
           elif [ -f ./gpt_resume_frontend/Dockerfile ]; then
             echo "DOCKERFILE=./gpt_resume_frontend/Dockerfile" >> $GITHUB_ENV
             echo "CONTEXT=./gpt_resume_frontend" >> $GITHUB_ENV
+          elif [ -f ./docker/Dockerfile ]; then
+            echo "DOCKERFILE=./docker/Dockerfile" >> $GITHUB_ENV
+            echo "CONTEXT=./docker" >> $GITHUB_ENV
           else
-            echo "ERROR: No Dockerfile found in common places" >&2
+            echo "ERROR: No Dockerfile found in repository root, ./gpt_resume/, ./gpt_resume_frontend/, or ./docker/" >&2
             exit 1
           fi
 
-      - name: Show Dockerfile and context
+      - name: Show chosen Dockerfile and context
         run: |
-          echo "DOCKERFILE=$DOCKERFILE"
-          echo "CONTEXT=$CONTEXT"
-          echo "IMAGE_TAG=${{ needs.prepare.outputs.IMAGE_TAG }}"
+          echo "DOCKERFILE=${DOCKERFILE:-<not set>}"
+          echo "CONTEXT=${CONTEXT:-<not set>}"
+          echo "GITHUB_SHA=${{ github.sha }}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
@@ -117,32 +108,37 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
+          # Use the detected context and Dockerfile
           context: ${{ env.CONTEXT }}
           file: ${{ env.DOCKERFILE }}
           push: true
+          # Use the full commit SHA as the image tag (guaranteed non-empty)
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/gpt-resume:${{ needs.prepare.outputs.IMAGE_TAG }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/gpt-resume:${{ github.sha }}
             ${{ secrets.DOCKERHUB_USERNAME }}/gpt-resume:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   update-helm-values:
+    name: Update Helm values.yaml with new image tag
     needs: push-image
     runs-on: ubuntu-latest
     steps:
-      # checkout with persist-credentials so git push uses the GITHUB_TOKEN
       - name: Checkout (allow push)
         uses: actions/checkout@v4
         with:
           persist-credentials: true
           fetch-depth: 0
 
-      - name: Ensure tag is present
+      - name: Compute short tag and confirm
+        id: compute_tag
         run: |
-          TAG="${{ needs.prepare.outputs.IMAGE_TAG }}"
-          echo "TAG='${TAG}'"
-          if [ -z "${TAG}" ]; then
-            echo "ERROR: IMAGE_TAG is empty - aborting helm update"
+          # compute short 12-char tag from github.sha for Helm (consistent with prior approach)
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-12)
+          echo "SHORT_SHA=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "Computed SHORT_SHA=${SHORT_SHA}"
+          if [ -z "${SHORT_SHA}" ]; then
+            echo "ERROR: computed SHORT_SHA is empty" >&2
             exit 1
           fi
 
@@ -150,15 +146,16 @@ jobs:
         id: update_values
         run: |
           VF="${{ env.VALUES_FILE }}"
-          TAG="${{ needs.prepare.outputs.IMAGE_TAG }}"
+          TAG="${{ steps.compute_tag.outputs.SHORT_SHA }}"
+          echo "Updating image tag to ${TAG} in ${VF}"
+
           if [ ! -f "$VF" ]; then
-            echo "values.yaml not found at $VF"
+            echo "ERROR: values.yaml not found at $VF" >&2
             exit 1
           fi
 
-          # update tag if exists
+          # If image block exists, try to replace tag under it; otherwise append a minimal image block
           if grep -q "^image:" "$VF"; then
-            # replace tag line under image: block, fallback to append if not found
             awk -v tag="$TAG" '
               BEGIN {in_image=0; updated=0}
               /^image:/ { print; in_image=1; next }
@@ -175,7 +172,7 @@ jobs:
             printf "\nimage:\n  repository: %s\n  tag: \"%s\"\n" "${{ secrets.DOCKERHUB_USERNAME }}/gpt-resume" "${TAG}" >> "$VF"
           fi
 
-          # detect whether file changed
+          # Stage the file and detect whether it changed
           git add "$VF" || true
           if git diff --staged --quiet; then
             echo "changed=false" >> $GITHUB_OUTPUT
@@ -188,10 +185,9 @@ jobs:
         run: |
           git config user.name "CI Bot"
           git config user.email "ci-bot@example.com"
-          git commit -m "ci: update image tag to ${{ needs.prepare.outputs.IMAGE_TAG }}" || echo "nothing to commit"
+          git commit -m "ci: update image tag to ${{ steps.compute_tag.outputs.SHORT_SHA }}" || echo "nothing to commit"
           git push origin HEAD:master
 
-      - name: Report (no-op) if nothing changed
+      - name: Report no-op when nothing changed
         if: ${{ steps.update_values.outputs.changed == 'false' }}
         run: echo "No changes to values.yaml; nothing to push."
-
