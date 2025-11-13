@@ -1,3 +1,6 @@
+
+
+
 # This file contains the code for handling the resume files and extracting the relevant information from them.
 
 # Python Libraries imports
@@ -94,7 +97,7 @@ class ApplicantHandler:
 
     def parse_resume(self):
         response = self.openai.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-3.5-turbo",
             messages=[
                 {"role": "user", "content": self.text},
                 {
