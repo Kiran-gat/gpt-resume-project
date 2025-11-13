@@ -31,14 +31,15 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./gpt_resume:/app   # ✅ Remove in production
+      - ./gpt_resume:/app   # Keep for development. REMOVE in production.
     depends_on:
-      db:
-        condition: service_healthy
-    entrypoint: ["/bin/sh", "-c", "/app/entrypoint.sh || gunicorn gpt_resume.wsgi:application --bind 0.0.0.0:8000"]
+      - db
+    # call entrypoint script (should exist at /app/entrypoint.sh). The script should exec gunicorn as needed.
+    entrypoint: ["/bin/sh", "-c", "/app/entrypoint.sh"]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget --spider --quiet http://localhost:8000/ || exit 1"]
+      # use curl (runtime image must have curl installed)
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/ || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -51,17 +52,21 @@ services:
       dockerfile: Dockerfile
     container_name: gpt_resume_frontend
     env_file:
-      - ./gpt_resume_frontend/.env.local
+      - ./gpt_resume_frontend/.env.local   # create from .env.example if needed
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://gpt_resume_backend:8000
+      - NEXT_PUBLIC_API_URL=http://backend:8000   # use service name for internal routing
     volumes:
-      - ./gpt_resume_frontend:/app  # ✅ Remove in production
+      - ./gpt_resume_frontend:/app  # Keep for development. REMOVE in production (use image).
     depends_on:
-      backend:
-        condition: service_healthy
+      - backend
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider --quiet http://localhost:3000/ || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
     networks:
       - gpt_resume_network
 
