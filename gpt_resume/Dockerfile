@@ -1,12 +1,30 @@
+# ---------- builder ----------
+FROM python:3.12-slim AS builder
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /app
+
+# Install system dependencies required by some Python packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential gcc pkg-config libmupdf-dev curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy only requirements first for caching
+COPY requirements.txt /app/requirements.txt
+
+# Upgrade pip and install dependencies
+RUN python -m pip install --upgrade pip setuptools wheel
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# Install Gunicorn for production
+RUN pip install --no-cache-dir gunicorn
+
+# Copy the rest of the backend code
+COPY . /app
+
 # ---------- runtime ----------
 FROM python:3.12-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
-
-# Install minimal runtime deps (certs + curl for healthchecks)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl && \
-    rm -rf /var/lib/apt/lists/*
 
 # Create a non-root user for better security
 RUN groupadd -r app && useradd -r -g app app
