@@ -39,7 +39,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Install runtime-only system packages required by healthcheck / runtime libs
-# libpq5 provides runtime postgres client libs; postgresql-client gives pg_isready
+# - libpq5 provides runtime postgres client libs; postgresql-client gives pg_isready
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
      libpq5 postgresql-client curl ca-certificates \
@@ -53,6 +53,10 @@ COPY --from=builder /usr/local/lib/python3.12 /usr/local/lib/python3.12
 COPY --from=builder /usr/local/bin /usr/local/bin
 COPY --from=builder --chown=app:app /app /app
 
+# Make sure entrypoint script is executable (if it exists in source)
+# (we copy from builder so it's already present)
+RUN chmod +x /app/entrypoint.sh || true
+
 # Switch to non-root user
 USER app
 
@@ -63,5 +67,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
   CMD curl -f http://localhost:8000/ || exit 1
 
-# Start Gunicorn server (adjust workers if needed)
+# Entrypoint will validate env and wait for DB; CMD starts Gunicorn
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["gunicorn", "gpt_resume.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]
